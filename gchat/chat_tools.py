@@ -188,6 +188,54 @@ async def list_spaces(
 
 
 @server.tool(
+    title="Find Direct Message",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@require_google_service("chat", "chat_spaces_readonly")
+@handle_http_errors("find_direct_message", service_type="chat")
+async def find_direct_message(
+    service,
+    user_google_email: str,
+    user_id: str,
+) -> str:
+    """
+    Finds the existing 1:1 direct message space with another user.
+
+    Args:
+        user_id (str): The other user, as "users/{id}", a bare numeric People API id,
+                       or an email address (e.g. "user@example.com").
+
+    Returns:
+        str: The DM space ID usable with get_messages/send_message, or a clear
+             message when no DM exists (i.e. no prior conversation with that user).
+    """
+    if not user_id.startswith("users/"):
+        user_id = f"users/{user_id}"
+
+    logger.info(f"[find_direct_message] Email={user_google_email}, User={user_id}")
+
+    try:
+        space = await asyncio.to_thread(
+            service.spaces().findDirectMessage(name=user_id).execute
+        )
+    except HttpError as e:
+        if e.resp.status == 404:
+            return (
+                f"No direct message space found with '{user_id}'. "
+                "A DM space only exists after at least one prior conversation with that user."
+            )
+        raise
+
+    space_id = space.get("name", "")
+    return f"Direct message space with '{user_id}': {space_id}"
+
+
+@server.tool(
     title="Get Messages",
     annotations=ToolAnnotations(
         readOnlyHint=True,

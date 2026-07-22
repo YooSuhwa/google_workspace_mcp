@@ -749,6 +749,78 @@ async def search_contacts(
 
 
 @server.tool(
+    title="Search Directory People",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@require_google_service("people", "directory_read")
+@handle_http_errors("search_directory_people", service_type="people")
+async def search_directory_people(
+    service: Resource,
+    user_google_email: str,
+    query: str,
+    page_size: int = 10,
+) -> str:
+    """
+    Search the Google Workspace organization directory by name or email.
+
+    Unlike search_contacts (personal contacts only), this searches every person
+    in the organization's shared directory.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        query (str): Name or email to search for in the directory.
+        page_size (int): Maximum number of results to return (default: 10, max: 50).
+
+    Returns:
+        str: Matching directory people with name, email, and the "users/{id}"
+             identifier usable with Chat tools such as find_direct_message.
+    """
+    logger.info(
+        f"[search_directory_people] Invoked. Email: '{user_google_email}', Query: '{query}'"
+    )
+
+    if page_size < 1:
+        raise UserInputError("page_size must be >= 1")
+    page_size = min(page_size, 50)
+
+    result = await asyncio.to_thread(
+        service.people()
+        .searchDirectoryPeople(
+            query=query,
+            readMask="names,emailAddresses",
+            sources="DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE",
+            pageSize=page_size,
+        )
+        .execute
+    )
+
+    people = result.get("people", [])
+
+    if not people:
+        return f"No directory people found matching '{query}' for {user_google_email}."
+
+    lines = [f"Directory search results for '{query}' ({len(people)} found):"]
+    for person in people:
+        resource_name = person.get("resourceName", "")  # "people/{id}"
+        chat_user_id = resource_name.replace("people/", "users/", 1)
+        names = person.get("names", [])
+        display_name = names[0].get("displayName", "Unknown") if names else "Unknown"
+        emails = person.get("emailAddresses", [])
+        email = emails[0].get("value", "") if emails else ""
+        lines.append(f"- {display_name} | {email} | {chat_user_id}")
+
+    logger.info(
+        f"Found {len(people)} directory people matching '{query}' for {user_google_email}"
+    )
+    return "\n".join(lines)
+
+
+@server.tool(
     title="Manage Contact",
     annotations=ToolAnnotations(
         readOnlyHint=False,
