@@ -155,17 +155,29 @@ async def list_spaces(
     """
     Lists Google Chat spaces (rooms and direct messages) accessible to the user.
 
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        page_size (int): Maximum number of spaces to return (default: 100).
+        space_type (str): Which spaces to list. One of:
+            "all"  — every space type, including group chats (default)
+            "room" — named spaces only (spaceType = SPACE)
+            "dm"   — 1:1 direct messages only (spaceType = DIRECT_MESSAGE)
+            Any other value is treated as "all". Group chats
+            (spaceType = GROUP_CHAT) are only returned by "all".
+
     Returns:
         str: A formatted list of Google Chat spaces accessible to the user.
     """
     logger.info(f"[list_spaces] Email={user_google_email}, Type={space_type}")
 
-    # Build filter based on space_type
+    # Build filter based on space_type. The Chat API requires the enum value to
+    # be quoted: an unquoted `spaceType = SPACE` is rejected with
+    # 'Invalid filter query' (HTTP 400).
     filter_param = None
     if space_type == "room":
-        filter_param = "spaceType = SPACE"
+        filter_param = 'spaceType = "SPACE"'
     elif space_type == "dm":
-        filter_param = "spaceType = DIRECT_MESSAGE"
+        filter_param = 'spaceType = "DIRECT_MESSAGE"'
 
     request_params = {"pageSize": page_size}
     if filter_param:
@@ -233,6 +245,146 @@ async def find_direct_message(
 
     space_id = space.get("name", "")
     return f"Direct message space with '{user_id}': {space_id}"
+
+
+# Chat API caps spaces.setup memberships at 49, in addition to the caller.
+_MAX_SPACE_MEMBERSHIPS = 49
+
+
+def _as_user_resource(user_id: str) -> str:
+    """Normalize a user reference to the Chat API's users/{id} resource form."""
+    user_id = user_id.strip()
+    return user_id if user_id.startswith("users/") else f"users/{user_id}"
+
+
+def _memberships_for(member_ids: Optional[List[str]]) -> List[dict]:
+    """Build deduplicated HUMAN membership entries, preserving caller order."""
+    memberships: List[dict] = []
+    seen = set()
+    for raw in member_ids or []:
+        if not raw or not raw.strip():
+            continue
+        name = _as_user_resource(raw)
+        if name in seen:
+            continue
+        seen.add(name)
+        memberships.append({"member": {"name": name, "type": "HUMAN"}})
+    return memberships
+
+
+@server.tool(
+    title="Create Direct Message",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@require_google_service("chat", "chat_spaces")
+@handle_http_errors("create_direct_message", service_type="chat")
+async def create_direct_message(
+    service,
+    user_google_email: str,
+    user_id: str,
+) -> str:
+    """
+    Opens the 1:1 direct message space with another user, creating it if needed.
+
+    Unlike find_direct_message, this also works with users you have never
+    messaged before. The Chat API returns the existing DM when one already
+    exists, so repeated calls are safe and return the same space.
+
+    Args:
+        user_id (str): The other user, as "users/{id}", a bare numeric People API id,
+                       or an email address (e.g. "user@example.com").
+
+    Returns:
+        str: The DM space ID usable with get_messages/send_message.
+    """
+    if not user_id or not user_id.strip():
+        return "Cannot create a direct message: user_id is required."
+
+    member = _as_user_resource(user_id)
+
+    logger.info(f"[create_direct_message] Email={user_google_email}, User={member}")
+
+    space = await asyncio.to_thread(
+        service.spaces()
+        .setup(
+            body={
+                "space": {"spaceType": "DIRECT_MESSAGE", "singleUserBotDm": False},
+                "memberships": [{"member": {"name": member, "type": "HUMAN"}}],
+            }
+        )
+        .execute
+    )
+
+    space_id = space.get("name", "")
+    return f"Direct message space with '{member}': {space_id}"
+
+
+@server.tool(
+    title="Create Space",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+@require_google_service("chat", "chat_spaces")
+@handle_http_errors("create_space", service_type="chat")
+async def create_space(
+    service,
+    user_google_email: str,
+    display_name: str,
+    member_ids: Optional[List[str]] = None,
+) -> str:
+    """
+    Creates a named Chat space and adds the given members to it.
+
+    The caller is always a member and does not need to be listed. Members may
+    be given as "users/{id}", bare numeric People API ids, or email addresses.
+
+    Args:
+        display_name (str): The space name shown in Chat.
+        member_ids (Optional[List[str]]): Users to add, at most 49.
+
+    Returns:
+        str: The created space ID usable with get_messages/send_message.
+    """
+    if not display_name or not display_name.strip():
+        return "Cannot create a space: display_name is required."
+
+    display_name = display_name.strip()
+    memberships = _memberships_for(member_ids)
+
+    if len(memberships) > _MAX_SPACE_MEMBERSHIPS:
+        return (
+            f"Cannot create a space with {len(memberships)} members — the Chat API "
+            f"allows at most {_MAX_SPACE_MEMBERSHIPS} in addition to you."
+        )
+
+    logger.info(
+        f"[create_space] Email={user_google_email}, Name={display_name}, "
+        f"Members={len(memberships)}"
+    )
+
+    space = await asyncio.to_thread(
+        service.spaces()
+        .setup(
+            body={
+                "space": {"spaceType": "SPACE", "displayName": display_name},
+                "memberships": memberships,
+            }
+        )
+        .execute
+    )
+
+    space_id = space.get("name", "")
+    member_note = f" with {len(memberships)} member(s)" if memberships else ""
+    return f"Created space '{display_name}'{member_note}: {space_id}"
 
 
 @server.tool(
