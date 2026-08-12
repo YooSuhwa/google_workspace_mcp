@@ -135,6 +135,17 @@ def _extract_rich_links(msg: dict) -> List[str]:
     return urls
 
 
+def _space_link(space: dict) -> str:
+    """Return a trailing 'Open in Chat' line when the API provides spaceUri.
+
+    DM and named space web URLs do not share a path format, so the link must come
+    from the API rather than being built from the space id. Absent on older
+    responses — the caller still gets the space id, just without a link.
+    """
+    uri = space.get("spaceUri", "")
+    return f"\nOpen in Chat: {uri}" if uri else ""
+
+
 @server.tool(
     title="List Spaces",
     annotations=ToolAnnotations(
@@ -244,7 +255,7 @@ async def find_direct_message(
         raise
 
     space_id = space.get("name", "")
-    return f"Direct message space with '{user_id}': {space_id}"
+    return f"Direct message space with '{user_id}': {space_id}{_space_link(space)}"
 
 
 # Chat API caps spaces.setup memberships at 49, in addition to the caller.
@@ -321,7 +332,7 @@ async def create_direct_message(
     )
 
     space_id = space.get("name", "")
-    return f"Direct message space with '{member}': {space_id}"
+    return f"Direct message space with '{member}': {space_id}{_space_link(space)}"
 
 
 @server.tool(
@@ -384,7 +395,9 @@ async def create_space(
 
     space_id = space.get("name", "")
     member_note = f" with {len(memberships)} member(s)" if memberships else ""
-    return f"Created space '{display_name}'{member_note}: {space_id}"
+    return (
+        f"Created space '{display_name}'{member_note}: {space_id}{_space_link(space)}"
+    )
 
 
 @server.tool(
