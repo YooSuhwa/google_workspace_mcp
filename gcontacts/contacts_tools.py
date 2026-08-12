@@ -650,14 +650,22 @@ async def get_contact(
     contact_id: str,
 ) -> str:
     """
-    Get detailed information about a specific contact.
+    Get detailed information about a specific contact or directory person.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
-        contact_id (str): The contact ID (e.g., "c1234567890" or full resource name "people/c1234567890").
+        contact_id (str): The person's identifier. Accepts either
+            - a personal-contact id, e.g. "c1234567890", or
+            - a directory person id, i.e. the numeric id returned by
+              search_directory_people, which is also the id part of a Chat
+              "users/{id}" resource name — pass just the number.
+            Both forms may include the "people/" prefix, e.g.
+            "people/c1234567890".
 
     Returns:
-        str: Detailed contact information.
+        str: Detailed contact information. For directory people this includes
+            their domain profile (organization, title, work contact details),
+            not just fields stored in the caller's personal contacts.
     """
     # Normalize resource name
     if not contact_id.startswith("people/"):
